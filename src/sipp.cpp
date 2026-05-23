@@ -254,6 +254,7 @@ static std::vector<std::string> launch_startup_wizard(const char *program_name)
         << "\nSIPp startup wizard\n"
         << "Press Enter to accept defaults. Type 'q' to quit.\n\n";
 
+    /* Choose the scenario first because later prompts depend on its role. */
     while (!scenario_choice) {
         std::cout << "Scenario:\n";
         for (size_t i = 0; i < sizeof(wizard_scenarios) / sizeof(wizard_scenarios[0]); ++i) {
@@ -292,6 +293,7 @@ static std::vector<std::string> launch_startup_wizard(const char *program_name)
         }
     }
 
+    /* File-based scenarios need a readable XML path and may still be client-side. */
     if (scenario_choice->use_scenario_file) {
         while (true) {
             if (!wizard_prompt_line("Path to XML scenario file: ", &scenario_path)) {
@@ -328,6 +330,7 @@ static std::vector<std::string> launch_startup_wizard(const char *program_name)
         }
     }
 
+    /* Client scenarios need a target host; server-style scenarios can bind locally. */
     if (scenario_choice->needs_remote_host || custom_scenario_uses_remote_host) {
         while (remote_host_value.empty()) {
             if (!wizard_prompt_line("Remote host[:port] [127.0.0.1]: ", &remote_host_value, "127.0.0.1")) {
@@ -339,6 +342,7 @@ static std::vector<std::string> launch_startup_wizard(const char *program_name)
         }
     }
 
+    /* Keep the transport choices aligned with the features compiled into this build. */
     while (true) {
 #ifdef USE_SCTP
         const char *transport_prompt = "Transport [udp/tcp/tls/sctp] (default udp): ";
@@ -358,12 +362,14 @@ static std::vector<std::string> launch_startup_wizard(const char *program_name)
         std::cout << ".\n";
     }
 
+    /* Built-in client scenarios use -s for the request URI user. */
     if (scenario_choice->needs_remote_host) {
         if (!wizard_prompt_line("Request URI user (-s) [service]: ", &service_value, DEFAULT_SERVICE)) {
             return {};
         }
     }
 
+    /* Load-generation limits are only useful once SIPp is placing outbound calls. */
     if (scenario_choice->needs_remote_host || custom_scenario_uses_remote_host) {
         if (!wizard_prompt_line("Call rate (-r) [10]: ", &rate_value, "10")) {
             return {};
@@ -380,6 +386,7 @@ static std::vector<std::string> launch_startup_wizard(const char *program_name)
         return {};
     }
 
+    /* Render the collected answers back into the same argv shape normal parsing uses. */
     args.push_back(program_name);
     if (scenario_choice->use_scenario_file) {
         args.push_back("-sf");
@@ -424,6 +431,7 @@ static std::vector<std::string> launch_startup_wizard(const char *program_name)
     }
     std::cout << "\n\n";
 
+    /* Let the user review the exact command before SIPp continues startup. */
     if (!wizard_prompt_line("Run this command now? [Y/n]: ", &input, "y")) {
         return {};
     }
