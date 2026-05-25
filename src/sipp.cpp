@@ -174,11 +174,13 @@ static bool wizard_prompt_line(const std::string &prompt, std::string *result, c
     std::cout << prompt;
     std::cout.flush();
 
+    /* Treat EOF the same as cancellation so non-interactive callers stop cleanly. */
     if (!std::getline(std::cin, *result)) {
         std::cout << "\n";
         return false;
     }
 
+    /* Normalize every answer before testing cancellation or applying defaults. */
     *result = trim_copy(*result);
     if (wizard_cancelled(*result)) {
         return false;
@@ -195,6 +197,7 @@ static bool parse_transport_choice(const std::string &value, std::string *transp
 {
     std::string lowered = lowercase_copy(trim_copy(value));
 
+    /* Convert friendly names into the existing -t option values. */
     if (lowered == "udp" || lowered == "u1") {
         *transport_arg = "u1";
         return true;
@@ -223,6 +226,7 @@ static std::vector<std::string> split_simple_args(const std::string &input)
     std::istringstream words(input);
     std::string word;
 
+    /* Keep parsing intentionally simple: this mirrors a shell-style word list. */
     while (words >> word) {
         result.push_back(word);
     }
@@ -232,9 +236,11 @@ static std::vector<std::string> split_simple_args(const std::string &input)
 
 static bool should_launch_startup_wizard(int argc)
 {
+    /* Only interrupt bare interactive launches; scripted invocations keep argv intact. */
     return argc < 2 && isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
 }
 
+/* Collect interactive answers and translate them into normal SIPp command options. */
 static std::vector<std::string> launch_startup_wizard(const char *program_name)
 {
     std::vector<std::string> args;
@@ -269,6 +275,7 @@ static std::vector<std::string> launch_startup_wizard(const char *program_name)
 
         std::string lowered = lowercase_copy(input);
         size_t numeric_choice = 0;
+        /* Accept either the displayed number or the scenario name. */
         if (!lowered.empty() &&
                 std::all_of(lowered.begin(), lowered.end(),
                             [](unsigned char c) { return std::isdigit(c) != 0; })) {
@@ -316,6 +323,7 @@ static std::vector<std::string> launch_startup_wizard(const char *program_name)
                 return {};
             }
 
+            /* A custom XML scenario can be either client-side or server-side. */
             std::string lowered = lowercase_copy(input);
             if (lowered == "y" || lowered == "yes") {
                 custom_scenario_uses_remote_host = true;
@@ -419,6 +427,7 @@ static std::vector<std::string> launch_startup_wizard(const char *program_name)
         args.push_back(remote_host_value);
     }
 
+    /* Preserve advanced options without trying to duplicate the main option parser here. */
     std::vector<std::string> extra_words = split_simple_args(extra_args);
     args.insert(args.end(), extra_words.begin(), extra_words.end());
 
