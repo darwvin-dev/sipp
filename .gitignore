@@ -40,6 +40,7 @@ stamp-h.in
 *.patch
 compile_commands.json
 
+/build*/
 CMakeCache.txt
 CMakeFiles/
 CTestTestfile.cmake
