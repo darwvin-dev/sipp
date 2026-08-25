@@ -127,8 +127,7 @@ struct sipp_option {
 #define SIPP_OPTION_NEED_SCTP     39
 #define SIPP_OPTION_RX_SCENARIO   40
 #define SIPP_OPTION_RX_INPUT_FILE 41
-#define SIPP_OPTION_CID_TYPE      42
-#define SIPP_OPTION_MULTI         43
+#define SIPP_OPTION_MULTI         42
 #define SIPP_HELP_TEXT_HEADER    255
 
 static char *call_id_mode_string = nullptr;
@@ -186,17 +185,6 @@ static const wizard_scenario_option wizard_scenarios[] = {
 #endif
     {"custom", "Custom XML scenario file.", false, true},
 };
-
-static std::string trim_copy(const std::string &value)
-{
-    size_t first = value.find_first_not_of(" \t\r\n");
-    if (first == std::string::npos) {
-        return "";
-    }
-
-    size_t last = value.find_last_not_of(" \t\r\n");
-    return value.substr(first, last - first + 1);
-}
 
 static bool wizard_cancelled(const std::string &value)
 {
@@ -266,14 +254,10 @@ static bool parse_transport_choice(const std::string &value, std::string *transp
 static std::vector<std::string> split_simple_args(const std::string &input)
 {
     std::vector<std::string> result;
-    std::istringstream words(input);
-    std::string word;
-
-    /* Keep parsing intentionally simple: this mirrors a shell-style word list. */
-    while (words >> word) {
-        result.push_back(word);
+    std::string error;
+    if (!split_command_args(input, &result, &error)) {
+        return {};
     }
-
     return result;
 }
 
@@ -1767,63 +1751,40 @@ void randomseed(void)
     srand(seed);
 }
 
-static bool get_multi_arg(int argc,
-                          char *argv[],
-                          int *argi,
-                          const char *option,
-                          std::string *value)
-{
-    if ((*argi + 1) >= argc) {
-        std::cerr << "Missing argument for " << option << "\n";
-        return false;
-    }
-    ++(*argi);
-    *value = argv[*argi];
-    return true;
-}
-
 static bool maybe_run_multi_instance(int argc, char *argv[], int *exit_code)
 {
-    std::string config_path;
-    int base_port = DEFAULT_PORT;
+    MultiInstanceOptions options;
+    std::string error;
+    MultiInstanceArgParseResult parse_result =
+        parse_multi_instance_launcher_args(argc, argv, DEFAULT_PORT, &options, &error);
 
-    for (int argi = 1; argi < argc; ++argi) {
-        if (!strcmp(argv[argi], "-multi")) {
-            if (!get_multi_arg(argc, argv, &argi, "-multi", &config_path)) {
-                *exit_code = EXIT_OTHER;
-                return true;
-            }
-        } else if (!strcmp(argv[argi], "-multi_base_port")) {
-            std::string value;
-            if (!get_multi_arg(argc, argv, &argi, "-multi_base_port", &value)) {
-                *exit_code = EXIT_OTHER;
-                return true;
-            }
-            char *end = nullptr;
-            long parsed_port = strtol(value.c_str(), &end, 10);
-            if (*end != '\0' || parsed_port <= 0 || parsed_port > 65535) {
-                std::cerr << "Invalid -multi_base_port value: " << value << "\n";
-                *exit_code = EXIT_OTHER;
-                return true;
-            }
-            base_port = static_cast<int>(parsed_port);
-        }
-    }
-
-    if (config_path.empty()) {
+    if (parse_result == MultiInstanceArgParseResult::NOT_REQUESTED) {
         return false;
     }
-
-    std::vector<MultiInstanceSpec> specs;
-    std::string error;
-    if (!parse_multi_instance_csv_file(config_path, &specs, &error)) {
+    if (parse_result == MultiInstanceArgParseResult::INVALID) {
         std::cerr << error << "\n";
         *exit_code = EXIT_OTHER;
         return true;
     }
 
-    std::vector<MultiInstanceCommand> commands =
-        build_multi_instance_commands(resolve_current_executable_path(), specs, base_port);
+    std::vector<MultiInstanceSpec> specs;
+    if (!parse_multi_instance_csv_file(options.config_path, &specs, &error)) {
+        std::cerr << error << "\n";
+        *exit_code = EXIT_OTHER;
+        return true;
+    }
+
+    std::vector<MultiInstanceCommand> commands;
+    if (!build_multi_instance_commands(resolve_current_executable_path(argv[0]),
+                                       specs,
+                                       options.base_port,
+                                       &commands,
+                                       &error)) {
+        std::cerr << error << "\n";
+        *exit_code = EXIT_OTHER;
+        return true;
+    }
+
     *exit_code = run_multi_instance_commands(commands, std::cout, std::cerr);
     return true;
 }
@@ -2429,6 +2390,9 @@ int main(int argc, char *argv[])
                 }
             }
             break;
+            case SIPP_OPTION_MULTI:
+                ERROR("Internal error: multi-instance options should be handled before normal option parsing");
+                break;
             default:
                 ERROR("Internal error: I don't recognize the option type for %s", argv[argi]);
             }
