@@ -32,10 +32,17 @@ into command-line arguments before placeholders are expanded.  This keeps
 placeholder values containing spaces or quote characters as a single
 argument instead of re-parsing them as shell syntax.
 
+The launcher-only options ``-multi`` and ``-multi_base_port`` (including their
+``--`` forms) are forbidden in child arguments.  Validation is performed after
+placeholder expansion, so placeholders cannot be used to create a nested
+launcher.  This prevents recursive configurations from bypassing the per-file
+child-process limit.
+
 The following placeholders are expanded in the ``args`` field:
 
 * ``{role}``: the role column value.
-* ``{instance}``: the zero-based instance number within that role.
+* ``{instance}``: the zero-based instance number within that role.  If a role
+  appears in more than one CSV row, numbering continues across those rows.
 * ``{base_port}``: the value passed with ``-multi_base_port``.
 * ``{instance_port}``: ``base_port + instance``.  Use this to pair UAC and UAS
   rows by instance number.
@@ -46,6 +53,12 @@ The launcher validates that all generated ports stay in the range 1 through
 exit code.  If a child cannot be forked, children already started by the
 launcher are terminated and reaped before the launcher exits with failure.
 If all children exit successfully, the launcher exits with zero.
+
+When the launcher receives ``SIGINT``, ``SIGTERM``, or ``SIGHUP``, it forwards
+a graceful termination to children, waits briefly, force-terminates any child
+that remains, reaps them, and exits with ``128 + signal``.  This also prevents
+children from being orphaned when the launcher is stopped by a service manager
+or CI timeout.
 
 All children inherit the launcher's standard input, output, and error streams.
 Multiple interactive SIPp screens will therefore interleave on one terminal.

@@ -12,6 +12,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #ifdef __APPLE__
@@ -22,6 +23,7 @@
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <unordered_map>
 
 std::string trim_copy(const std::string &value)
 {
@@ -47,9 +49,15 @@ static bool multi_option_matches(const char *value, const char *name)
         return false;
     }
 
-    std::string short_option = "-" + std::string(name);
-    std::string long_option = "--" + std::string(name);
-    return value == short_option || value == long_option;
+    const std::string option(value);
+    return option == "-" + std::string(name) ||
+           option == "--" + std::string(name);
+}
+
+static bool is_launcher_only_argument(const std::string &value)
+{
+    return value == "-multi" || value == "--multi" ||
+           value == "-multi_base_port" || value == "--multi_base_port";
 }
 
 static bool parse_port(const std::string &value, int *port)
@@ -80,7 +88,8 @@ parse_multi_instance_launcher_args(int argc,
     bool saw_base_port = false;
     std::string unexpected_argument;
 
-    for (int argi = 1; argi < argc; ++argi) {
+    int argi = 1;
+    while (argi < argc) {
         if (multi_option_matches(argv[argi], "multi")) {
             if (saw_multi) {
                 *error = "-multi may only be specified once";
@@ -91,8 +100,12 @@ parse_multi_instance_launcher_args(int argc,
                 return MultiInstanceArgParseResult::INVALID;
             }
             saw_multi = true;
-            options->config_path = argv[++argi];
-        } else if (multi_option_matches(argv[argi], "multi_base_port")) {
+            options->config_path = argv[argi + 1];
+            argi += 2;
+            continue;
+        }
+
+        if (multi_option_matches(argv[argi], "multi_base_port")) {
             if (saw_base_port) {
                 *error = "-multi_base_port may only be specified once";
                 return MultiInstanceArgParseResult::INVALID;
@@ -102,14 +115,19 @@ parse_multi_instance_launcher_args(int argc,
                 return MultiInstanceArgParseResult::INVALID;
             }
             saw_base_port = true;
-            std::string value = argv[++argi];
+            std::string value = argv[argi + 1];
             if (!parse_port(value, &options->base_port)) {
                 *error = "Invalid -multi_base_port value: " + value;
                 return MultiInstanceArgParseResult::INVALID;
             }
-        } else if (unexpected_argument.empty()) {
+            argi += 2;
+            continue;
+        }
+
+        if (unexpected_argument.empty()) {
             unexpected_argument = argv[argi];
         }
+        ++argi;
     }
 
     if (!saw_multi && !saw_base_port) {
@@ -157,21 +175,23 @@ static bool parse_csv_line(const std::string &line,
     bool field_was_quoted = false;
     bool quote_closed = false;
 
-    for (size_t i = 0; i < line.size(); ++i) {
+    size_t i = 0;
+    while (i < line.size()) {
         char ch = line[i];
 
         if (in_quotes) {
             if (ch == '"') {
                 if ((i + 1 < line.size()) && line[i + 1] == '"') {
                     current.push_back('"');
-                    ++i;
-                } else {
-                    in_quotes = false;
-                    quote_closed = true;
+                    i += 2;
+                    continue;
                 }
+                in_quotes = false;
+                quote_closed = true;
             } else {
                 current.push_back(ch);
             }
+            ++i;
             continue;
         }
 
@@ -184,6 +204,7 @@ static bool parse_csv_line(const std::string &line,
                 *error = "unexpected character after quoted CSV field";
                 return false;
             }
+            ++i;
             continue;
         }
 
@@ -201,6 +222,7 @@ static bool parse_csv_line(const std::string &line,
         } else {
             current.push_back(ch);
         }
+        ++i;
     }
 
     if (in_quotes) {
@@ -310,8 +332,6 @@ static bool canonical_regular_file_path(const std::string &path,
     return true;
 }
 
-#ifndef __linux__
-#ifndef __APPLE__
 static std::string resolve_from_argv0(const char *argv0)
 {
     if (!argv0 || !argv0[0]) {
@@ -351,8 +371,6 @@ static std::string resolve_from_argv0(const char *argv0)
 
     return "";
 }
-#endif
-#endif
 
 std::string resolve_current_executable_path(const char *argv0)
 {
@@ -363,7 +381,7 @@ std::string resolve_current_executable_path(const char *argv0)
         path[length] = '\0';
         return path;
     }
-    return "";
+    return resolve_from_argv0(argv0);
 #elif defined(__APPLE__)
     char path[PATH_MAX];
     uint32_t size = sizeof(path);
@@ -374,7 +392,7 @@ std::string resolve_current_executable_path(const char *argv0)
         }
         return path;
     }
-    return "";
+    return resolve_from_argv0(argv0);
 #else
     return resolve_from_argv0(argv0);
 #endif
@@ -515,6 +533,8 @@ bool build_multi_instance_commands(const std::string &program_path,
         return false;
     }
 
+    std::unordered_map<std::string, int> next_instance_by_role;
+
     for (const MultiInstanceSpec &spec : specs) {
         if (spec.count <= 0 ||
             commands->size() + static_cast<size_t>(spec.count) >
@@ -525,7 +545,9 @@ bool build_multi_instance_commands(const std::string &program_path,
             return false;
         }
 
-        for (int instance = 0; instance < spec.count; ++instance) {
+        int &next_role_instance = next_instance_by_role[spec.role];
+        for (int row_instance = 0; row_instance < spec.count; ++row_instance) {
+            const int instance = next_role_instance++;
             long long next_port = static_cast<long long>(base_port) +
                                   static_cast<long long>(commands->size());
             long long instance_port = static_cast<long long>(base_port) + instance;
@@ -547,8 +569,21 @@ bool build_multi_instance_commands(const std::string &program_path,
                 replace_all(&word, "{instance}", std::to_string(instance));
                 replace_all(&word, "{instance_port}", std::to_string(instance_port));
                 replace_all(&word, "{base_port}", std::to_string(base_port));
+                if (word.find("{port}") != std::string::npos) {
+                    command.uses_port = true;
+                }
                 replace_all(&word, "{port}", std::to_string(next_port));
                 command.argv.push_back(word);
+            }
+
+            for (size_t argi = 1; argi < command.argv.size(); ++argi) {
+                if (is_launcher_only_argument(command.argv[argi])) {
+                    *error = "launcher-only option " + command.argv[argi] +
+                             " is not allowed in child arguments for role " +
+                             spec.role + " instance " + std::to_string(instance);
+                    commands->clear();
+                    return false;
+                }
             }
 
             commands->push_back(command);
@@ -558,25 +593,136 @@ bool build_multi_instance_commands(const std::string &program_path,
     return true;
 }
 
-static void kill_and_reap_children(const std::vector<pid_t> &children,
-                                   std::ostream &err)
+static volatile sig_atomic_t multi_shutdown_signal = 0;
+
+static void multi_instance_signal_handler(int signal_number)
+{
+    multi_shutdown_signal = signal_number;
+}
+
+struct SavedSignalHandlers {
+    struct sigaction sigint_action;
+    struct sigaction sigterm_action;
+    struct sigaction sighup_action;
+    bool sigint_saved = false;
+    bool sigterm_saved = false;
+    bool sighup_saved = false;
+};
+
+static void restore_signal_handlers(const SavedSignalHandlers &saved)
+{
+    if (saved.sigint_saved) {
+        sigaction(SIGINT, &saved.sigint_action, nullptr);
+    }
+    if (saved.sigterm_saved) {
+        sigaction(SIGTERM, &saved.sigterm_action, nullptr);
+    }
+    if (saved.sighup_saved) {
+        sigaction(SIGHUP, &saved.sighup_action, nullptr);
+    }
+}
+
+static bool install_signal_handlers(SavedSignalHandlers *saved,
+                                    std::ostream &err)
+{
+    struct sigaction action;
+    memset(&action, 0, sizeof(action));
+    action.sa_handler = multi_instance_signal_handler;
+    sigemptyset(&action.sa_mask);
+
+    if (sigaction(SIGINT, &action, &saved->sigint_action) != 0) {
+        err << "sigaction failed for SIGINT: " << strerror(errno) << "\n";
+        return false;
+    }
+    saved->sigint_saved = true;
+
+    if (sigaction(SIGTERM, &action, &saved->sigterm_action) != 0) {
+        err << "sigaction failed for SIGTERM: " << strerror(errno) << "\n";
+        restore_signal_handlers(*saved);
+        return false;
+    }
+    saved->sigterm_saved = true;
+
+    if (sigaction(SIGHUP, &action, &saved->sighup_action) != 0) {
+        err << "sigaction failed for SIGHUP: " << strerror(errno) << "\n";
+        restore_signal_handlers(*saved);
+        return false;
+    }
+    saved->sighup_saved = true;
+    return true;
+}
+
+static void send_signal_to_children(const std::vector<pid_t> &children,
+                                    int signal_number,
+                                    std::ostream &err)
 {
     for (pid_t child : children) {
-        if (kill(child, SIGKILL) != 0 && errno != ESRCH) {
-            err << "failed to terminate child " << child << ": " << strerror(errno) << "\n";
+        if (kill(child, signal_number) != 0 && errno != ESRCH) {
+            err << "failed to signal child " << child << ": " << strerror(errno) << "\n";
+        }
+    }
+}
+
+static void terminate_and_reap_children(std::vector<pid_t> *children,
+                                        std::ostream &err)
+{
+    if (children->empty()) {
+        return;
+    }
+
+    send_signal_to_children(*children, SIGTERM, err);
+
+    const struct timespec pause_time = {0, 100000000};
+    for (int attempt = 0; attempt < 10 && !children->empty(); ++attempt) {
+        std::vector<pid_t> remaining;
+        remaining.reserve(children->size());
+
+        for (pid_t child : *children) {
+            int status = 0;
+            pid_t waited = waitpid(child, &status, WNOHANG);
+            if (waited == 0) {
+                remaining.push_back(child);
+            } else if (waited < 0 && errno != ECHILD) {
+                if (errno != EINTR) {
+                    err << "waitpid failed for " << child << ": "
+                        << strerror(errno) << "\n";
+                }
+                remaining.push_back(child);
+            }
+        }
+
+        children->swap(remaining);
+        if (!children->empty()) {
+            struct timespec remaining_pause = pause_time;
+            while (nanosleep(&remaining_pause, &remaining_pause) != 0 && errno == EINTR) {
+            }
         }
     }
 
-    for (pid_t child : children) {
+    if (!children->empty()) {
+        send_signal_to_children(*children, SIGKILL, err);
+    }
+
+    for (pid_t child : *children) {
         int status = 0;
-        while (waitpid(child, &status, 0) < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            if (errno != ECHILD) {
-                err << "waitpid failed for " << child << ": " << strerror(errno) << "\n";
-            }
-            break;
+        pid_t waited;
+        do {
+            waited = waitpid(child, &status, 0);
+        } while (waited < 0 && errno == EINTR);
+
+        if (waited < 0 && errno != ECHILD) {
+            err << "waitpid failed for " << child << ": " << strerror(errno) << "\n";
+        }
+    }
+    children->clear();
+}
+
+static void erase_child(std::vector<pid_t> *children, pid_t child)
+{
+    for (auto it = children->begin(); it != children->end(); ++it) {
+        if (*it == child) {
+            children->erase(it);
+            return;
         }
     }
 }
@@ -587,10 +733,23 @@ int run_multi_instance_commands(const std::vector<MultiInstanceCommand> &command
 {
     std::vector<pid_t> children;
     int exit_code = 0;
+    multi_shutdown_signal = 0;
+
+    SavedSignalHandlers saved_handlers;
+    if (!install_signal_handlers(&saved_handlers, err)) {
+        return 1;
+    }
 
     for (const MultiInstanceCommand &command : commands) {
+        if (multi_shutdown_signal != 0) {
+            int signal_number = multi_shutdown_signal;
+            terminate_and_reap_children(&children, err);
+            restore_signal_handlers(saved_handlers);
+            return 128 + signal_number;
+        }
+
         out << "Starting " << command.role << "[" << command.instance << "]";
-        if (command.port > 0) {
+        if (command.uses_port && command.port > 0) {
             out << " port=" << command.port;
         }
         out << ":";
@@ -603,10 +762,13 @@ int run_multi_instance_commands(const std::vector<MultiInstanceCommand> &command
         pid_t child = fork();
         if (child < 0) {
             err << "fork failed: " << strerror(errno) << "\n";
-            kill_and_reap_children(children, err);
+            terminate_and_reap_children(&children, err);
+            restore_signal_handlers(saved_handlers);
             return 1;
         }
         if (child == 0) {
+            restore_signal_handlers(saved_handlers);
+
             std::vector<char *> argv;
             argv.reserve(command.argv.size() + 1);
             for (const std::string &arg : command.argv) {
@@ -621,19 +783,28 @@ int run_multi_instance_commands(const std::vector<MultiInstanceCommand> &command
         children.push_back(child);
     }
 
-    for (pid_t child : children) {
-        int status = 0;
-        pid_t waited;
-        do {
-            waited = waitpid(child, &status, 0);
-        } while (waited < 0 && errno == EINTR);
+    while (!children.empty()) {
+        if (multi_shutdown_signal != 0) {
+            int signal_number = multi_shutdown_signal;
+            terminate_and_reap_children(&children, err);
+            restore_signal_handlers(saved_handlers);
+            return 128 + signal_number;
+        }
 
+        pid_t child = children.front();
+        int status = 0;
+        pid_t waited = waitpid(child, &status, 0);
         if (waited < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
             err << "waitpid failed for " << child << ": " << strerror(errno) << "\n";
+            erase_child(&children, child);
             exit_code = 1;
             continue;
         }
 
+        erase_child(&children, child);
         if (WIFEXITED(status)) {
             int child_exit = WEXITSTATUS(status);
             if (child_exit != 0 && exit_code == 0) {
@@ -647,5 +818,9 @@ int run_multi_instance_commands(const std::vector<MultiInstanceCommand> &command
         }
     }
 
+    if (multi_shutdown_signal != 0) {
+        exit_code = 128 + multi_shutdown_signal;
+    }
+    restore_signal_handlers(saved_handlers);
     return exit_code;
 }

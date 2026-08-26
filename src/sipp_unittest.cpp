@@ -200,6 +200,66 @@ TEST(MultiInstanceConfig, RejectsPortAllocationOverflow)
     EXPECT_TRUE(commands.empty());
 }
 
+TEST(MultiInstanceConfig, RejectsNestedLauncherOptionsAfterExpansion)
+{
+    std::string error;
+    std::vector<MultiInstanceSpec> specs;
+    std::vector<MultiInstanceCommand> commands;
+
+    const std::string direct =
+        "role,count,args\n"
+        "rec,2,\"-multi rec.csv\"\n";
+    ASSERT_TRUE(parse_multi_instance_csv(direct, "direct.csv", &specs, &error)) << error;
+    EXPECT_FALSE(build_multi_instance_commands("./sipp", specs, 5060, &commands, &error));
+    EXPECT_NE(std::string::npos, error.find("launcher-only option -multi"));
+
+    error.clear();
+    const std::string via_placeholder =
+        "role,count,args\n"
+        "-multi,2,\"{role} rec.csv\"\n";
+    ASSERT_TRUE(parse_multi_instance_csv(via_placeholder, "placeholder.csv", &specs, &error)) << error;
+    EXPECT_FALSE(build_multi_instance_commands("./sipp", specs, 5060, &commands, &error));
+    EXPECT_NE(std::string::npos, error.find("launcher-only option -multi"));
+}
+
+TEST(MultiInstanceConfig, ContinuesInstanceNumbersAcrossRepeatedRoleRows)
+{
+    const std::string csv =
+        "role,count,args\n"
+        "uas,1,\"-sn uas -p {instance_port}\"\n"
+        "uas,1,\"-sn uas -p {instance_port}\"\n";
+
+    std::string error;
+    std::vector<MultiInstanceSpec> specs;
+    ASSERT_TRUE(parse_multi_instance_csv(csv, "repeated.csv", &specs, &error)) << error;
+
+    std::vector<MultiInstanceCommand> commands;
+    ASSERT_TRUE(build_multi_instance_commands("./sipp", specs, 5060, &commands, &error)) << error;
+    ASSERT_EQ(2u, commands.size());
+    EXPECT_EQ(0, commands[0].instance);
+    EXPECT_EQ(1, commands[1].instance);
+    EXPECT_EQ("5060", commands[0].argv.back());
+    EXPECT_EQ("5061", commands[1].argv.back());
+}
+
+TEST(MultiInstanceConfig, TracksGlobalPortPlaceholderUsage)
+{
+    const std::string csv =
+        "role,count,args\n"
+        "uas,1,\"-sn uas -p {instance_port}\"\n"
+        "uac,1,\"-sn uac -p {port}\"\n";
+
+    std::string error;
+    std::vector<MultiInstanceSpec> specs;
+    ASSERT_TRUE(parse_multi_instance_csv(csv, "ports.csv", &specs, &error)) << error;
+
+    std::vector<MultiInstanceCommand> commands;
+    ASSERT_TRUE(build_multi_instance_commands("./sipp", specs, 5060, &commands, &error)) << error;
+    ASSERT_EQ(2u, commands.size());
+    EXPECT_FALSE(commands[0].uses_port);
+    EXPECT_TRUE(commands[1].uses_port);
+}
+
 TEST(MultiInstanceArgs, BasePortWithoutMultiIsRejected)
 {
     MultiInstanceOptions options;

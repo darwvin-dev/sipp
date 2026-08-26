@@ -32,6 +32,7 @@ struct MultiInstanceCommand {
     std::string role;
     int instance;
     int port;
+    bool uses_port = false;
     std::string executable_path;
     std::vector<std::string> argv;
 };
