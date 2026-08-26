@@ -319,3 +319,19 @@ TEST(MultiInstanceArgs, ShellSplitterPreservesEmptyQuotedArgument)
     ASSERT_TRUE(split_command_args("-key value \"\" tail", &words, &error)) << error;
     EXPECT_EQ(std::vector<std::string>({"-key", "value", "", "tail"}), words);
 }
+
+#if defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__sun)
+TEST(MultiInstanceExecutable, IgnoresCallerControlledArgv0)
+{
+    const std::string attacker_path = "/tmp/attacker-controlled-sipp";
+    const std::string other_path = "/tmp/another-attacker-controlled-sipp";
+
+    const std::string resolved = resolve_current_executable_path(attacker_path.c_str());
+    const std::string resolved_again = resolve_current_executable_path(other_path.c_str());
+
+    ASSERT_FALSE(resolved.empty());
+    EXPECT_EQ(resolved, resolved_again);
+    EXPECT_NE(attacker_path, resolved);
+    EXPECT_NE(other_path, resolved);
+}
+#endif

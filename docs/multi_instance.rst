@@ -60,6 +60,12 @@ that remains, reaps them, and exits with ``128 + signal``.  This also prevents
 children from being orphaned when the launcher is stopped by a service manager
 or CI timeout.
 
+Child processes always execute the same SIPp process image as the launcher.
+The executable path is resolved from operating-system process metadata rather
+than caller-controlled ``argv[0]`` or CSV data.  If the current executable
+cannot be resolved safely, launcher mode fails closed instead of executing a
+fallback path.
+
 All children inherit the launcher's standard input, output, and error streams.
 Multiple interactive SIPp screens will therefore interleave on one terminal.
 Use ``-nostdin`` for children and redirect the launcher's output when a clean

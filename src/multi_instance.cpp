@@ -19,6 +19,10 @@
 #include <mach-o/dyld.h>
 #endif
 
+#ifdef __FreeBSD__
+#include <sys/sysctl.h>
+#endif
+
 #include <cctype>
 #include <fstream>
 #include <iostream>
@@ -332,69 +336,71 @@ static bool canonical_regular_file_path(const std::string &path,
     return true;
 }
 
-static std::string resolve_from_argv0(const char *argv0)
+static std::string canonical_executable_path(const char *path)
 {
-    if (!argv0 || !argv0[0]) {
+    if (!path || !path[0]) {
         return "";
     }
 
     char resolved[PATH_MAX];
-    if (realpath(argv0, resolved)) {
-        return resolved;
-    }
-
-    if (strchr(argv0, '/')) {
-        return argv0;
-    }
-
-    const char *path_value = getenv("PATH");
-    if (!path_value) {
+    if (!realpath(path, resolved)) {
         return "";
     }
 
-    std::istringstream paths(path_value);
-    std::string directory;
-    while (std::getline(paths, directory, ':')) {
-        if (directory.empty()) {
-            directory = ".";
-        }
-        std::string candidate = directory + "/" + argv0;
-        struct stat st;
-        if (stat(candidate.c_str(), &st) == 0 && S_ISREG(st.st_mode) &&
-            access(candidate.c_str(), X_OK) == 0) {
-            if (realpath(candidate.c_str(), resolved)) {
-                return resolved;
-            }
-            return candidate;
-        }
+    struct stat st;
+    if (stat(resolved, &st) != 0 || !S_ISREG(st.st_mode) ||
+        access(resolved, X_OK) != 0) {
+        return "";
     }
 
-    return "";
+    return resolved;
 }
 
 std::string resolve_current_executable_path(const char *argv0)
 {
+    /* argv[0] is caller-controlled and must never select the executable used
+     * by the launcher.  Keep the parameter for source compatibility, but
+     * resolve the current process image only through OS-provided mechanisms. */
+    (void)argv0;
+
 #ifdef __linux__
     char path[PATH_MAX];
     ssize_t length = readlink("/proc/self/exe", path, sizeof(path) - 1);
-    if (length > 0) {
-        path[length] = '\0';
-        return path;
+    if (length <= 0) {
+        return "";
     }
-    return resolve_from_argv0(argv0);
+    path[length] = '\0';
+    return canonical_executable_path(path);
 #elif defined(__APPLE__)
     char path[PATH_MAX];
     uint32_t size = sizeof(path);
-    if (_NSGetExecutablePath(path, &size) == 0) {
-        char resolved[PATH_MAX];
-        if (realpath(path, resolved)) {
-            return resolved;
-        }
-        return path;
+    if (_NSGetExecutablePath(path, &size) != 0) {
+        return "";
     }
-    return resolve_from_argv0(argv0);
+    return canonical_executable_path(path);
+#elif defined(__FreeBSD__)
+#ifdef KERN_PROC_PATHNAME
+    char path[PATH_MAX];
+    size_t size = sizeof(path);
+    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME, -1};
+    if (sysctl(mib, 4, path, &size, nullptr, 0) != 0 || size == 0) {
+        return "";
+    }
+    path[sizeof(path) - 1] = '\0';
+    return canonical_executable_path(path);
 #else
-    return resolve_from_argv0(argv0);
+    return "";
+#endif
+#elif defined(__sun)
+    char path[PATH_MAX];
+    ssize_t length = readlink("/proc/self/path/a.out", path, sizeof(path) - 1);
+    if (length <= 0) {
+        return "";
+    }
+    path[length] = '\0';
+    return canonical_executable_path(path);
+#else
+    return "";
 #endif
 }
 
@@ -735,6 +741,16 @@ int run_multi_instance_commands(const std::vector<MultiInstanceCommand> &command
     int exit_code = 0;
     multi_shutdown_signal = 0;
 
+    /* Never trust MultiInstanceCommand::executable_path at the exec boundary.
+     * Resolve the current process image independently so caller-controlled
+     * argv[0] or command data cannot select a different executable. */
+    const std::string trusted_executable_path =
+        resolve_current_executable_path(nullptr);
+    if (trusted_executable_path.empty()) {
+        err << "unable to resolve trusted SIPp executable path\n";
+        return 1;
+    }
+
     SavedSignalHandlers saved_handlers;
     if (!install_signal_handlers(&saved_handlers, err)) {
         return 1;
@@ -746,6 +762,13 @@ int run_multi_instance_commands(const std::vector<MultiInstanceCommand> &command
             terminate_and_reap_children(&children, err);
             restore_signal_handlers(saved_handlers);
             return 128 + signal_number;
+        }
+
+        if (command.argv.empty()) {
+            err << "multi-instance child command has an empty argv\n";
+            terminate_and_reap_children(&children, err);
+            restore_signal_handlers(saved_handlers);
+            return 1;
         }
 
         out << "Starting " << command.role << "[" << command.instance << "]";
@@ -774,9 +797,10 @@ int run_multi_instance_commands(const std::vector<MultiInstanceCommand> &command
             for (const std::string &arg : command.argv) {
                 argv.push_back(const_cast<char *>(arg.c_str()));
             }
+            argv[0] = const_cast<char *>(trusted_executable_path.c_str());
             argv.push_back(nullptr);
-            execv(command.executable_path.c_str(), argv.data());
-            std::cerr << "exec failed for " << command.executable_path << ": "
+            execv(trusted_executable_path.c_str(), argv.data());
+            std::cerr << "exec failed for " << trusted_executable_path << ": "
                       << strerror(errno) << "\n";
             _exit(127);
         }
