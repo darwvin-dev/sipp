@@ -120,6 +120,27 @@ int get_decimal_from_hex(char hex)
         return tolower(hex) - 'a' + 10;
 }
 
+int decode_hex_escapes(char *buffer, int length)
+{
+    int read_pos = 0;
+    int write_pos = 0;
+
+    while (read_pos < length) {
+        if (read_pos + 3 < length && buffer[read_pos] == '\\' &&
+            buffer[read_pos + 1] == 'x' && isxdigit(buffer[read_pos + 2]) &&
+            isxdigit(buffer[read_pos + 3])) {
+            buffer[write_pos++] = static_cast<char>(
+                (get_decimal_from_hex(buffer[read_pos + 2]) << 4) |
+                get_decimal_from_hex(buffer[read_pos + 3]));
+            read_pos += 4;
+        } else {
+            buffer[write_pos++] = buffer[read_pos++];
+        }
+    }
+    buffer[write_pos] = '\0';
+    return write_pos;
+}
+
 #ifdef GTEST
 #include "gtest/gtest.h"
 

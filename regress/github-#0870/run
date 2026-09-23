@@ -1,0 +1,9 @@
+#!/bin/sh
+. "`dirname "$0"`/../functions"; init
+sippfg -m 1 -sf uas.xml -p 5070 >/dev/null 2>&1 &
+job=$!
+sippfg -m 1 -sf uac.xml -inf data.txt -key payload '\x68\x65\x6c\x6c\x6f\x20\x77\x6f\x72\x6c\x64' 127.0.0.1:5070 -timeout 4 -timeout_error >/dev/null 2>&1
+status=$?
+wait $job || status=1
+test $status -eq 0 && ok
+fail "binary injection was not decoded"

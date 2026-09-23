@@ -6659,7 +6659,9 @@ void call::getFieldFromInputFile(const char *fileName, int field, SendingMessage
     if (line < 0) {
         return;
     }
-    dest += inFiles[fileName]->getField(line, field, dest, SIPP_MAX_MSG_SIZE);
+    int field_length = inFiles[fileName]->getField(line, field, dest, SIPP_MAX_MSG_SIZE);
+    field_length = decode_hex_escapes(dest, field_length);
+    dest += field_length;
 }
 
 call::T_AutoMode call::checkAutomaticResponseMode(char* P_recv)

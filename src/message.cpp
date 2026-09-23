@@ -353,8 +353,14 @@ SendingMessage::SendingMessage(scenario* msg_scenario, const char* const_src, bo
                 auto gen = generic.find(keyword);
                 if (gen != generic.end()) {
                     newcomp->type = E_Message_Literal;
-                    newcomp->literal = strdup((*gen).second.c_str());
-                    newcomp->literalLen = strlen(newcomp->literal);
+                    const std::string &value = gen->second;
+                    newcomp->literal = (char *)malloc(value.size() + 1);
+                    if (!newcomp->literal) {
+                        ERROR("Out of memory!");
+                    }
+                    memcpy(newcomp->literal, value.data(), value.size());
+                    newcomp->literal[value.size()] = '\0';
+                    newcomp->literalLen = decode_hex_escapes(newcomp->literal, value.size());
                 } else {
                     ERROR("Unsupported keyword '%s' in xml scenario file",
                           keyword);
