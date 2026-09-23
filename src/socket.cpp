@@ -1426,10 +1426,12 @@ SIPpSocket* SIPpSocket::accept() {
 #if defined(USE_OPENSSL) || defined(USE_WOLFSSL)
         int rc;
         int i = 0;
+        const auto handshake_deadline = std::chrono::steady_clock::now() +
+                                        std::chrono::milliseconds(tls_handshake_timeout);
         while ((rc = SSL_accept(ret->ss_ssl)) < 0) {
             int err = SSL_get_error(ret->ss_ssl, rc);
             if ((err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) &&
-                    i < SIPP_SSL_MAX_RETRIES) {
+                    std::chrono::steady_clock::now() < handshake_deadline) {
                 /* These errors are benign we just need to wait for the socket
                  * to be readable/writable again. */
                 WARNING("SSL_accept failed with error: %s. Attempt %d. "
@@ -1557,10 +1559,12 @@ int SIPpSocket::connect(struct sockaddr_storage* dest)
 #if defined(USE_OPENSSL) || defined(USE_WOLFSSL)
         int rc;
         int i = 0;
+        const auto handshake_deadline = std::chrono::steady_clock::now() +
+                                        std::chrono::milliseconds(tls_handshake_timeout);
         while ((rc = SSL_connect(ss_ssl)) < 0) {
             int err = SSL_get_error(ss_ssl, rc);
             if ((err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) &&
-                    i < SIPP_SSL_MAX_RETRIES) {
+                    std::chrono::steady_clock::now() < handshake_deadline) {
                 /* These errors are benign we just need to wait for the socket
                  * to be readable/writable again. */
                 WARNING("SSL_connect failed with error: %s. Attempt %d. "
