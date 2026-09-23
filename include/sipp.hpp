@@ -428,6 +428,7 @@ MAYBE_EXTERN char          hostname[80];
 MAYBE_EXTERN int           reset_number                 DEFVAL(0);
 MAYBE_EXTERN bool          reset_close                  DEFVAL(true);
 MAYBE_EXTERN int           reset_sleep                  DEFVAL(1000);
+MAYBE_EXTERN bool          reconnect_resend             DEFVAL(false);
 MAYBE_EXTERN bool          sendbuffer_warn              DEFVAL(false);
 /* A list of sockets pending reset. */
 MAYBE_EXTERN std::set<SIPpSocket*> sockets_pending_reset;

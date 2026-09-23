@@ -1613,6 +1613,27 @@ int call::send_raw(const char * msg, int index, int len)
         return rc;
     }
 
+    if(rc < 0 && reconnect_resend && !reset_close &&
+            (transport == T_TCP || transport == T_TLS) && reconnect_allowed()) {
+        /* write_error() may have scheduled this socket for the normal
+         * asynchronous reset path. Reconnect synchronously here so
+         * this exact message can be retried once. */
+        sockets_pending_reset.erase(sock);
+        if (reset_number != -1) {
+            reset_number--;
+        }
+
+        usleep(1000 * reset_sleep);
+        if (sock->reconnect() == 0) {
+            WARNING("Reconnected %s socket after send failure; retrying message once",
+                    TRANSPORT_TO_STRING(transport));
+            rc = sock->write(msg, len, WS_BUFFER, &call_peer);
+            if (rc >= 0 || errno == EWOULDBLOCK) {
+                return rc;
+            }
+        }
+    }
+
     if(rc < 0) {
         computeStat(CStat::E_CALL_FAILED);
         computeStat(CStat::E_FAILED_CANNOT_SEND_MSG);

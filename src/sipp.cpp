@@ -588,6 +588,7 @@ struct sipp_option options_table[] = {
     {"max_reconnect", "Set the the maximum number of reconnection.", SIPP_OPTION_INT, &reset_number, 1},
     {"reconnect_close", "Should calls be closed on reconnect?", SIPP_OPTION_BOOL, &reset_close, 1},
     {"reconnect_sleep", "How long (in milliseconds) to sleep between the close and reconnect?", SIPP_OPTION_TIME_MS, &reset_sleep, 1},
+    {"reconnect_resend", "Reconnect and retry a failed TCP/TLS send once. This may duplicate a request if the peer processed it before the connection failed. Use with -reconnect_close false and -max_reconnect.", SIPP_OPTION_BOOL, &reconnect_resend, 1},
     {"rsa", "Set the remote sending address to host:port for sending the messages.", SIPP_OPTION_RSA, nullptr, 1},
 
     {"tls_cert", "Set the name for TLS Certificate file. Default is 'cacert.pem'", SIPP_OPTION_STRING, &tls_cert_name, 1},

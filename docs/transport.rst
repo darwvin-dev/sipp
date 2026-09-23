@@ -100,6 +100,11 @@ control this behaviour:
 + -reconnect_close true/false : Should calls be closed on reconnect?
 + -reconnect_sleep int : How long to sleep (in milliseconds) between
   the close and reconnect?
++ -reconnect_resend true/false : On a failed TCP/TLS send, reconnect and
+  retry that message once. This is disabled by default because a connection
+  failure can be ambiguous: the peer may already have received the request.
+  Use ``-reconnect_close false`` to preserve the active call and configure
+  ``-max_reconnect`` to permit reconnect attempts.
 
 
 
