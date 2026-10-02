@@ -1,0 +1,39 @@
+name: feature-tool-validation
+
+on:
+  push:
+    branches: ['3.validation-tools']
+  workflow_dispatch:
+
+jobs:
+  python-tools:
+    runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        ref:
+          - feature/control-api-webui
+          - feature/metrics-observability
+          - feature/ci-threshold-reports
+          - feature/media-impairment
+          - feature/rtcp-qos-mos
+          - feature/ice-stun-turn
+          - feature/dtls-srtp
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ matrix.ref }}
+      - name: Install optional crypto dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes python3-cryptography
+      - name: Compile Python helpers
+        run: |
+          files=$(find tools -maxdepth 1 -type f -name 'sipp_*.py' -print)
+          test -n "$files"
+          python3 -m py_compile $files
+      - name: Run SIPp Python tool tests
+        run: |
+          count=$(find tests -maxdepth 1 -type f -name 'test_sipp_*.py' | wc -l)
+          test "$count" -gt 0
+          python3 -m unittest discover -s tests -p 'test_sipp_*.py' -v
