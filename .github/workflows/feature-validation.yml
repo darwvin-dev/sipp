@@ -37,3 +37,5 @@ jobs:
           count=$(find tests -maxdepth 1 -type f -name 'test_sipp_*.py' | wc -l)
           test "$count" -gt 0
           python3 -m unittest discover -s tests -p 'test_sipp_*.py' -v
+
+# Validation branch only: feature heads remain independent PR candidates.
