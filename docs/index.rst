@@ -20,7 +20,9 @@ Welcome to SIPp reference documentation!
    transport
    multi_instance
    media
+   dtls_srtp
    statistics
+   ci_reports
    error
    perftest
    tools
