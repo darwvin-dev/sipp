@@ -854,18 +854,29 @@ private:
 class RtpstreamReader
 {
 public:
-    RtpstreamReader(int sock, RtpstreamBuffer &buffer, size_t size) : sock(sock), size(size)
+    /* Read from sock, datagrams of up to size bytes. One reader is kept
+     * per thread: its message headers stay as they are for as long as its
+     * buffer does. */
+    void reset(int new_sock, RtpstreamBuffer &buffer, size_t new_size)
     {
+        sock = new_sock;
 #ifdef HAVE_RECVMMSG
-        data = buffer.get(RTPSTREAM_RECV_BATCH * size);
-        memset(msgs, 0, sizeof(msgs));
-        for (int i = 0; data && i < RTPSTREAM_RECV_BATCH; i++) {
-            iovs[i].iov_base = data + i * size;
-            iovs[i].iov_len = size;
-            msgs[i].msg_hdr.msg_iov = &iovs[i];
-            msgs[i].msg_hdr.msg_iovlen = 1;
+        unsigned char *new_data = buffer.get(RTPSTREAM_RECV_BATCH * new_size);
+        if (new_data != data || new_size != size) {
+            data = new_data;
+            size = new_size;
+            memset(msgs, 0, sizeof(msgs));
+            for (int i = 0; data && i < RTPSTREAM_RECV_BATCH; i++) {
+                iovs[i].iov_base = data + i * size;
+                iovs[i].iov_len = size;
+                msgs[i].msg_hdr.msg_iov = &iovs[i];
+                msgs[i].msg_hdr.msg_iovlen = 1;
+            }
         }
+        count = RTPSTREAM_RECV_BATCH;
+        index = RTPSTREAM_RECV_BATCH;
 #else
+        size = new_size;
         data = buffer.get(size);
 #endif
     }
@@ -899,9 +910,9 @@ public:
     }
 
 private:
-    int sock;
-    unsigned char *data;
-    size_t size;
+    int sock = -1;
+    unsigned char *data = nullptr;
+    size_t size = 0;
 #ifdef HAVE_RECVMMSG
     struct mmsghdr msgs[RTPSTREAM_RECV_BATCH];
     struct iovec iovs[RTPSTREAM_RECV_BATCH];
@@ -1010,8 +1021,7 @@ static unsigned long rtpstream_playrtptask(taskentry_t* taskinfo,
                 /* need to send rtp payload - build rtp packet header... */
                 udp_send_audio.resize(rtpstream_buffer_len(taskinfo->audio_bytes_per_packet));
                 udp_recv_audio.resize(udp_send_audio.size());
-                rtp_header_t* send_audio_hdr = (rtp_header_t*) udp_send_audio.data();
-                memset(udp_send_audio.data(), 0, rtpstream_packet_len(taskinfo->audio_bytes_per_packet));
+                rtp_header_t *send_audio_hdr = (rtp_header_t *)udp_send_audio.data();
                 send_audio_hdr->flags = htons(0x8000 | taskinfo->audio_payload_type);
                 send_audio_hdr->seq = htons(taskinfo->audio_seq_out);
                 send_audio_hdr->timestamp = htonl((uint32_t) (taskinfo->last_audio_timestamp & 0XFFFFFFFF));
@@ -1050,6 +1060,12 @@ static unsigned long rtpstream_playrtptask(taskentry_t* taskinfo,
 
                 /* now send the actual packet */
                 rc = send(taskinfo->audio_rtp_socket, audio_out.data(), audio_out.size(), 0);
+                if (rc < 0 && errno == ECONNREFUSED) {
+                    /* The port unreachable of an earlier packet, as the peer
+                     * has not opened its port yet: reported once, and this
+                     * packet was not sent. Send it, and play on. */
+                    rc = send(taskinfo->audio_rtp_socket, audio_out.data(), audio_out.size(), 0);
+                }
                 if (rc < 0)
                 {
                     debugafile.printHex("SEND FAILED: ", "", 0, rc, errno);
@@ -1091,11 +1107,31 @@ static unsigned long rtpstream_playrtptask(taskentry_t* taskinfo,
                         audio_in_size = sizeof(rtp_header_t) + taskinfo->audio_bytes_per_packet;
                     }
 
-                    audio_in.assign(audio_in_size, 0);
-                    RtpstreamReader reader(taskinfo->audio_rtp_socket, packet_in,
-                                           std::max<size_t>(media_bufsize, audio_in_size));
+                    /* Read what comes back only when something looks at it:
+                     * the SRTP decrypt, the pattern check, <rtp_stats> or
+                     * the debug file. Left unread, as 3.6 left it, the
+                     * socket's queue fills once and the kernel drops each
+                     * later packet as it comes, for less than a read of
+                     * each costs. */
+                    const bool read_in = rx || taskinfo->audio_pattern_id > 0 || rtp_stats_used || rtpcheck_debug;
+                    if (read_in == taskinfo->audio_rcvbuf_small) {
+                        /* The queue of a socket that is not read holds
+                         * rtp_buffsize of kernel memory per call, 64 KB by
+                         * default: give it the least the kernel allows, a
+                         * few packets, and the full size back when a later
+                         * play reads it. */
+                        int rcvbuf = read_in ? rtp_buffsize : 1;
+                        setsockopt(taskinfo->audio_rtp_socket, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+                        taskinfo->audio_rcvbuf_small = !read_in;
+                    }
+                    static thread_local RtpstreamReader reader;
                     const unsigned char *packet;
-                    while ((rc = reader.next(&packet)) >= 0) {
+                    if (read_in) {
+                        audio_in.assign(audio_in_size, 0);
+                        reader.reset(taskinfo->audio_rtp_socket, packet_in,
+                                     std::max<size_t>(media_bufsize, audio_in_size));
+                    }
+                    while (read_in && (rc = reader.next(&packet)) >= 0) {
                         audio_echo = true;
                         memcpy(audio_in.data(), packet, std::min<size_t>(rc, audio_in_size));
                         /* for now we will just ignore any received data or receive errors */
@@ -1142,26 +1178,14 @@ static unsigned long rtpstream_playrtptask(taskentry_t* taskinfo,
                         else
                         {
                             // NOENCRYPTION
-                            host_flags = ntohs(((rtp_header_t*)audio_in.data())->flags);
-                            host_seqnum = ntohs(((rtp_header_t*)audio_in.data())->seq);
-                            host_timestamp = ntohl(((rtp_header_t*)audio_in.data())->timestamp);
-                            host_ssrc = ntohl(((rtp_header_t*)audio_in.data())->ssrc_id);
+                            host_seqnum = ntohs(((rtp_header_t *)audio_in.data())->seq);
 
-                            audio_in[0] = (host_flags >> 8) & 0xFF;
-                            audio_in[1] = host_flags & 0xFF;
-                            audio_in[2] = (host_seqnum >> 8) & 0xFF;
-                            audio_in[3] = host_seqnum & 0xFF;
-                            audio_in[4] = (host_timestamp >> 24) & 0xFF;
-                            audio_in[5] = (host_timestamp >> 16) & 0xFF;
-                            audio_in[6] = (host_timestamp >> 8) & 0xFF;
-                            audio_in[7] = host_timestamp & 0xFF;
-                            audio_in[8] = (host_ssrc >> 24) & 0xFF;
-                            audio_in[9] = (host_ssrc >> 16) & 0xFF;
-                            audio_in[10] = (host_ssrc >> 8) & 0xFF;
-                            audio_in[11] = host_ssrc & 0xFF;
-
-                            memset(udp_recv_audio.data(), 0, rtpstream_packet_len(taskinfo->audio_bytes_per_packet));
-                            memcpy(udp_recv_audio.data(), audio_in.data(), audio_in.size());
+                            /* only the pattern check reads the packet */
+                            if (taskinfo->audio_pattern_id > 0) {
+                                memset(udp_recv_audio.data(), 0,
+                                       rtpstream_packet_len(taskinfo->audio_bytes_per_packet));
+                                memcpy(udp_recv_audio.data(), audio_in.data(), audio_in.size());
+                            }
                         }
 
                         // VALIDATION TEST
@@ -1288,8 +1312,7 @@ static unsigned long rtpstream_playrtptask(taskentry_t* taskinfo,
                 /* need to send rtp payload - build rtp packet header... */
                 udp_send_video.resize(rtpstream_buffer_len(taskinfo->video_bytes_per_packet));
                 udp_recv_video.resize(udp_send_video.size());
-                rtp_header_t* send_video_hdr = (rtp_header_t*) udp_send_video.data();
-                memset(udp_send_video.data(), 0, rtpstream_packet_len(taskinfo->video_bytes_per_packet));
+                rtp_header_t *send_video_hdr = (rtp_header_t *)udp_send_video.data();
                 send_video_hdr->flags = htons(0x8000 | taskinfo->video_payload_type);
                 send_video_hdr->seq = htons(taskinfo->video_seq_out);
                 send_video_hdr->timestamp = htonl((uint32_t) (taskinfo->last_video_timestamp & 0XFFFFFFFF));
@@ -1328,6 +1351,12 @@ static unsigned long rtpstream_playrtptask(taskentry_t* taskinfo,
 
                 /* now send the actual packet */
                 rc = send(taskinfo->video_rtp_socket, video_out.data(), video_out.size(), 0);
+                if (rc < 0 && errno == ECONNREFUSED) {
+                    /* The port unreachable of an earlier packet, as the peer
+                     * has not opened its port yet: reported once, and this
+                     * packet was not sent. Send it, and play on. */
+                    rc = send(taskinfo->video_rtp_socket, video_out.data(), video_out.size(), 0);
+                }
                 if (rc < 0)
                 {
                     debugvfile.printHex("SEND FAILED: ", "", 0, rc, errno);
@@ -1367,8 +1396,8 @@ static unsigned long rtpstream_playrtptask(taskentry_t* taskinfo,
                     }
 
                     video_in.assign(video_in_size, 0);
-                    RtpstreamReader reader(taskinfo->video_rtp_socket, packet_in,
-                                           std::max<size_t>(media_bufsize, video_in_size));
+                    static thread_local RtpstreamReader reader;
+                    reader.reset(taskinfo->video_rtp_socket, packet_in, std::max<size_t>(media_bufsize, video_in_size));
                     const unsigned char *packet;
                     while ((rc = reader.next(&packet)) >= 0) {
                         video_echo = true;

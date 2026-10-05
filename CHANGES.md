@@ -58,8 +58,9 @@ any earlier release (see the "Memory and CPU per call" entry).
   port of the `m=text` line (#403, by Orgad Shaneh)
 - `<rtp_dtmf>` assigns the RFC 4733 DTMF digits a call received to a
   variable (#407, by Orgad Shaneh)
-- `<recv timeout_variable>` takes the receive timeout from a call
-  variable (#968, by Orgad Shaneh)
+- `<recv timeout>` may contain keywords, such as `[field3]` or
+  `[$wait]`, for a receive timeout that varies per call (#968, by Orgad
+  Shaneh)
 - `start_rtd` and `rtd` take a comma-separated list of timers (#970, by
   Orgad Shaneh)
 - `-m_csv` stops after as many calls as the first `-inf` file has lines
@@ -87,6 +88,9 @@ any earlier release (see the "Memory and CPU per call" entry).
   could not send, and a request that the old connection lost without a
   response, go on the new connection. Over TLS too, whose failed writes
   now make the connection again as over TCP (#782, by Orgad Shaneh)
+- `tools/sipp_report.py` checks the last row of a `-trace_stat` file
+  against thresholds for CI and writes JSON and JUnit reports (#1277, by
+  Darwvin)
 
 ### Changed
 
@@ -112,25 +116,18 @@ any earlier release (see the "Memory and CPU per call" entry).
   `IPPROTO_RAW` sockets, and plays start on multiples of 20 ms (#1005,
   #1111, #1113, by Orgad Shaneh)
 - Memory and CPU per call are much lower, after 3.7 had raised them
-  far above 3.6: at 12000 calls/s the built-in UAS peaks at 164 MB,
-  against 1162 MB in 3.7.8 and 282 MB in 3.6.1, and 10000 calls playing
-  media take 74 MB, against 220 MB in 3.7.8 and 31 MB in 3.6.1. The
-  built-in UAC and UAS keep up with 26000 calls/s, where they fell
-  behind and failed calls from 24000. SRTP no longer repeats its AES and
-  HMAC setup for each packet, its media threads keep only the session
-  keys, and it encrypts with AES-CTR: 5000 SRTP echo calls take a fifth
-  less CPU and a quarter less memory. A header is read in one pass
-  over the message, where it is, rather than copied for each lookup,
-  messages are built without temporary strings, a socket read keeps
-  only what it got rather than 64 KB, a Call-ID is found in a hash
-  table rather than a tree, a Digest response reuses its hash contexts,
-  the paused calls of the next 4 s move into the timer wheel a few at a
-  time rather than all at once, which held up the main loop for 30-45
-  ms every 4 s, RTP makes fewer system calls per packet, reading echoes
-  with recvmmsg(), idle playback tasks wake together, and the socket
-  loop and RTP echo wait with epoll (#1110, #1117, #1118, #1119,
-  #1122-#1131, #1230, #1232-#1234, #1247, #1253, #1255, by Orgad
-  Shaneh)
+  far above 3.6: at 12000 calls/s the built-in UAS peaks at 148 MB
+  (1240 MB in 3.7.8, 242 MB in 3.6.1), and 2000 calls playing media
+  take 16 MB (54 MB in 3.7.8, 14 MB in 3.6.1). The built-in UAC and UAS
+  keep up with 18000 calls/s on 2 cores, where 3.6.1 and 3.7.8 lose
+  calls from 7000 and 5000. SRTP sets up AES and HMAC once, not per
+  packet, and takes a sixth less CPU and a third less memory. Message
+  parsing and building copy less, Call-IDs are found in a hash table,
+  paused calls no longer stall the main loop for 30-45 ms every 4 s, RTP
+  makes fewer system calls, and a play that nothing looks at no longer
+  reads what comes back, which took 30% of its CPU and 120 KB of kernel
+  memory per call (#1110, #1117, #1118, #1119, #1122-#1131, #1230,
+  #1232-#1234, #1247, #1253, #1255, by Orgad Shaneh)
 - A pass over the calls ends after 10 ms and runs the calls that resume
   first, so a burst of new calls no longer leaves incoming messages
   unread for seconds (#1101), and the call rate starts with the traffic,
@@ -280,6 +277,10 @@ any earlier release (see the "Memory and CPU per call" entry).
   - a paused `rtp_stream` resumes at once, with the timestamp of the
     packet time it resumes in, rather than sending the packet before it
     and the current one together (#1228)
+  - `rtp_stream` goes on playing when the peer's media port is not open
+    yet, instead of closing its socket at the first ICMP port
+    unreachable, which left a call to an SBC that opens its port a few
+    milliseconds after the ACK with no media at all
   - the RTCP socket is kept (#898), WAV chunk sizes and short files are
     read right (#902, #1075), a WAV file with no audio no longer hangs
     the playback thread (#1144), a missing `rtp_stream` file fails the
