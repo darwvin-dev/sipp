@@ -17,10 +17,16 @@ Welcome to SIPp reference documentation!
    scenarios/index
    3PCC_extended
    controlling
+   control_api
    transport
    multi_instance
    media
+   dtls_srtp
+   media_impairment
+   rtcp_qos
    statistics
+   observability
+   ci_reports
    error
    perftest
    tools
